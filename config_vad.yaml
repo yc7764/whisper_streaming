@@ -1,0 +1,22 @@
+# config.yaml
+
+ip : "127.0.0.1"
+
+port : 5000
+
+# cpu or cuda
+device : "cuda"
+
+channel : 1
+
+# 0 to 3
+vad_mode : 1
+
+# tiny, base, small, medium, large, large-v2, large-v3
+model : "base"
+
+language : 'ko'
+
+log_path : "/mnt/f/workspace/stt_tcp_whisper/log/STT_log"
+
+pcm_path : "/mnt/f/workspace/stt_tcp_whisper/data"
