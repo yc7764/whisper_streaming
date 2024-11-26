@@ -8,14 +8,39 @@ import librosa
 import webrtcvad
 from multiprocessing import Process
 from whisper import WhisperModel
+from datetime import datetime
+
 from util import get_today, make_folder
 
 logger = logging.getLogger(__name__)
 
+class ASRConfig:
+    """ASR 설정을 관리하는 클래스"""
+    def __init__(self, **kwargs):
+        # 오디오 설정
+        self.frame_size = kwargs.get('frame_size', 480)  # 16000Hz * 30ms = 480
+        self.sample_rate = kwargs.get('sample_rate', 16000)
+        self.frame_duration_ms = kwargs.get('frame_duration_ms', 30)
+        
+        # VAD 설정
+        self.vad_mode = kwargs.get('vad_mode', 1)
+        
+        # 네트워크 설정
+        self.socket_timeout = kwargs.get('socket_timeout', 60)
+        
+        # 모델 설정
+        self.model_size = kwargs.get('model_size', 'base')
+        self.device = kwargs.get('device', 'cpu')
+        self.language = kwargs.get('language', 'ko')
+        
+        # 로깅 설정 추가
+        self.save_pcm = kwargs.get('save_pcm', False)
+        self.pcm_path = kwargs.get('pcm_path', 'pcm_files')
+
 class ASRProcess(Process):
-    """음성 인식 처리를 위한 프로세스 클래스"""
-    
-    def __init__(self, engine_name, data_queue, args):
+    """실시간 음성 인식을 처리하는 프로세스 클래스"""
+
+    def __init__(self, engine_name, data_queue, config=None):
         """
         ASR 프로세스 초기화
         
@@ -25,17 +50,16 @@ class ASRProcess(Process):
             엔진 이름
         data_queue : list
             데이터 큐 [입력큐, 출력큐]
-        args : dict
-            설정 인자
+        config : ASRConfig, optional
+            ASR 설정 객체. None인 경우 기본값 사용
         """
         super().__init__()
-        self.args = args
         self.data_in = data_queue[0]
         self.data_out = data_queue[1]
         self.engine_name = engine_name
-        self.conf = conf
+        self.config = config or ASRConfig()
 
-    def process_audio_segment(self, wavData, epd_start, vad_index, frame_start):
+    def process_audio_segment(self, wavData, epd_start, vad_index, frame_start, whisper_model):
         """
         오디오 세그먼트 처리 및 음성 인식 수행
         
@@ -49,28 +73,30 @@ class ASRProcess(Process):
             VAD 인덱스
         frame_start : float
             프레임 시작 시간
+        whisper_model : WhisperModel
+            Whisper 모델 인스턴스
         """
-        epd_start_time = (epd_start//FRAME_SIZE) * (FRAME_DURATION_MS/1000)
-        epdbuffer = wavData[epd_start:vad_index+FRAME_SIZE+1]
+        epd_start_time = (epd_start//self.config.frame_size) * (self.config.frame_duration_ms/1000)
+        epdbuffer = wavData[epd_start:vad_index+self.config.frame_size+1]
         
         # 오디오 파일 생성 및 리샘플링
         sf = soundfile.SoundFile(
             io.BytesIO(np.array(epdbuffer)), 
             channels=1,
             endian="LITTLE",
-            samplerate=SAMPLE_RATE, 
+            samplerate=self.config.sample_rate, 
             subtype="PCM_16",
             format="RAW"
         )
-        audio, _ = librosa.load(sf, sr=SAMPLE_RATE)
-        y_resampled = librosa.resample(audio, orig_sr=SAMPLE_RATE, target_sr=16000)
+        audio, _ = librosa.load(sf, sr=self.config.sample_rate)
+        y_resampled = librosa.resample(audio, orig_sr=self.config.sample_rate, target_sr=16000)
         
         # Whisper 모델을 통한 음성 인식
         segments, _ = whisper_model.transcribe(
             y_resampled, 
-            language="ko", 
+            language=self.config.language, 
             beam_size=5, 
-            condition_on_previous_text=False, 
+            condition_on_previous_text=False,
             log_prob_threshold=0.4, 
             vad_filter=True
         )
@@ -79,10 +105,64 @@ class ASRProcess(Process):
         result_text = self.combine_segments(segments)
         
         if result_text:
-            resultTxt = f'{epd_start_time:3.1f} {frame_start+(FRAME_DURATION_MS/1000):3.1f} : {result_text}'
+            resultTxt = f'{epd_start_time:3.1f} {frame_start+(self.config.frame_duration_ms/1000):3.1f} : {result_text}'
             self.data_out.put_nowait(('%R', resultTxt))
             
         return result_text
+    def process_voice_data(self, wavData, buf, np_wav, vad_index, 
+                          vad, triggered, epd_start, silence_cnt, epd_state, whisper_model):
+        """음성 데이터 처리 및 VAD 적용"""
+        # 새로운 데이터 추가
+        if wavData is None:
+            wavData = buf
+        else:
+            wavData.extend(buf)
+        
+        # 바이트 데이터를 short 타입으로 변환
+        epdShortBuffer = struct.unpack('h' * (len(buf) // 2), buf)
+        np_wav = np.concatenate((np_wav, np.array(epdShortBuffer, dtype=np.int16)), axis=0)
+        
+        # VAD 처리
+        while vad_index + self.config.frame_size <= len(wavData):
+            frame = wavData[vad_index:vad_index+self.config.frame_size]
+            frame_start = (vad_index//self.config.frame_size) * (self.config.frame_duration_ms/1000)
+            
+            if vad.is_speech(frame, self.config.sample_rate):
+                if not triggered:
+                    # 음성 구간 시작
+                    triggered = True
+                    epd_state = 1
+                    epd_start = vad_index
+                    silence_cnt = 0
+                else:
+                    epd_state = 1
+                    if frame_start+(self.config.frame_duration_ms/1000) - (epd_start//self.config.frame_size)*(self.config.frame_duration_ms/1000) > 10:
+                        # 음성 구간이 너무 길 경우 중간 처리
+                        self.process_audio_segment(wavData, epd_start, vad_index, frame_start, whisper_model)
+                        triggered = False
+            else:
+                silence_cnt += 1
+                if triggered:
+                    if silence_cnt > 16:
+                        # 무음 구간이 충분히 길어 음성 구간 종료로 판단
+                        epd_state = 2
+                        triggered = False
+                        self.process_audio_segment(wavData, epd_start, vad_index, frame_start, whisper_model)
+                    else:
+                        epd_state = 1
+                else:
+                    epd_state = 0
+            
+            vad_index += self.config.frame_size
+        
+        return wavData, triggered, epd_start, silence_cnt, epd_state, vad_index
+
+    def handle_finish_packet(self, np_wav, triggered, epd_start, whisper_model):
+        """종료 패킷 처리"""
+        if triggered:
+            frame_start = (len(np_wav)//self.config.frame_size) * (self.config.frame_duration_ms/1000)
+            self.process_audio_segment(np_wav, epd_start, len(np_wav), frame_start, whisper_model)
+            logger.info(f'Engine[{self.engine_name}] : 인식 종료')
 
     def combine_segments(self, segments):
         """
@@ -101,6 +181,65 @@ class ASRProcess(Process):
                 result_text = segment.text
         return result_text
 
+    def handle_illegal_packet(self, header):
+        """잘못된 패킷 처리"""
+        self.data_out.put_nowait(('%F', None))
+        error_msg = f'Engine[{self.engine_name}] : ILLEGAL_PACKET : header[{header}]'
+        logger.error(error_msg)
+        
+    def initialize_whisper_model(self):
+        """Whisper 모델 초기화"""
+        return WhisperModel(
+            model_size=self.config.model_size,
+            device=self.config.device,
+            compute_type="float16"
+        )
+
+    def save_log(self, np_wav, username):
+        """
+        음성 데이터와 로그를 저장
+        
+        Parameters
+        ----------
+        np_wav : numpy.ndarray
+            저장할 음성 데이터 배열
+        username : str
+            사용자 이름
+        """
+        try:
+            # 현재 날짜와 시간으로 파일명 생성
+            current_date, current_time = get_today()
+            
+            # PCM 파일 저장 (옵션)
+            if hasattr(self.config, 'save_pcm') and self.config.save_pcm:
+                pcm_dir = self.config.pcm_path or "pcm_files"
+                make_folder(pcm_dir)
+                
+                pcm_filename = f"{pcm_dir}/{current_date}_{username}_{current_time}.pcm"
+                with open(pcm_filename, 'wb') as f:
+                    f.write(np_wav.tobytes())
+                
+                logger.info(f"Engine[{self.engine_name}] : PCM 파일 저장 완료 - {pcm_filename}")
+                
+        except Exception as e:
+            error_msg = f"Engine[{self.engine_name}] : 로그 저장 실패 - {str(e)}"
+            logger.error(error_msg)
+            logger.exception(e)
+
+    def handle_error(self, e):
+        """
+        예외 처리 및 로깅
+        
+        Parameters
+        ----------
+        e : Exception
+            처리할 예외 객체
+        """
+        error_msg = f"Engine[{self.engine_name}] : {e.__class__.__name__}:{str(e)}"
+        logger.error(error_msg)
+        logger.exception(e)
+        self.data_out.put_nowait(('%E', error_msg))
+
     def run(self):
         """ASR 프로세스 실행"""
         try:
@@ -108,7 +247,7 @@ class ASRProcess(Process):
             
             # VAD 초기화
             vad = webrtcvad.Vad()
-            vad.set_mode(self.conf["vad_mode"])
+            vad.set_mode(self.config.vad_mode)
             
             # Whisper 모델 초기화
             whisper_model = self.initialize_whisper_model()
@@ -126,80 +265,41 @@ class ASRProcess(Process):
                 
                 # 사용자 정보 수신
                 (header, buf) = self.data_in.get()
-                if header == b'%b':
-                    username = buf
-                else:
+                if header != b'%b':
                     continue
-                    
+                username = buf
+                
                 try:
-                    while isStart:
-                        epdProcessedByteN = 0
-                        retResult = None
-                        
-                        while True:
-                            # 데이터 수신
-                            (header, buf) = self.data_in.get(timeout=SOCKET_TIMEOUT+1)
-                            
-                            if header == b'%f':
-                                # 종료 패킷 처리
-                                self.handle_finish_packet(wavData, triggered)
-                                isStart = False
-                                break
-                                
-                            elif header == b'%s':
-                                # 음성 데이터 처리
-                                wavData = self.process_voice_data(
-                                    wavData, buf, epdProcessedByteN, np_wav,
-                                    vad_index, vad, triggered, epd_start,
-                                    silence_cnt, epd_state
-                                )
-                                
-                            else:
-                                # 잘못된 패킷 처리
-                                self.handle_illegal_packet(header)
-                                isStart = False
-                                break
+                    epdProcessedByteN = 0
+                    retResult = None
 
-                        # 결과 처리
-                        self.process_results(retResult, wavData, epdProcessedByteN)
+                    while isStart:
+                        # 데이터 수신
+                        (header, buf) = self.data_in.get(timeout=self.config.socket_timeout+1)
                         
-                        if not isStart:
-                            break
+                        if header == b'%f':
+                            # 종료 패킷
+                            self.handle_finish_packet(np_wav, triggered, epd_start, whisper_model)
+                            isStart = False
+                            
+                        elif header == b'%s':
+                            # 음성 데이터 처리
+                            wavData, triggered, epd_start, silence_cnt, epd_state, vad_index = \
+                                self.process_voice_data(wavData, buf, np_wav,
+                                                        vad_index, vad, triggered, epd_start,
+                                                        silence_cnt, epd_state, whisper_model)
+                        else:
+                            # 잘못된 패킷 처리
+                            self.handle_illegal_packet(header)
+                            isStart = False
                             
                 except Exception as e:
                     self.handle_error(e)
                 finally:
-                    isStart = False
-                    
-                # 로그 저장
-                self.save_log(np_wav, username)
-                
-                if not isStart:
+                    logger.info(f'Engine[{self.engine_name}] : {username} 요청 처리 종료')
                     self.data_out.put_nowait(('%F', None))
+                    # 로그 저장
+                    self.save_log(np_wav, username)
                     
         except Exception as e:
             self.handle_error(e)
-
-    def initialize_whisper_model(self):
-        """Whisper 모델 초기화"""
-        if self.conf["device"] == "cpu":
-            return WhisperModel(MODEL_SIZE, device="cpu", compute_type="int8")
-        elif self.conf["device"] == "cuda":
-            return WhisperModel(MODEL_SIZE, device="cuda", compute_type="float32")
-        else:
-            logger.warn("설정 파일의 device를 확인하세요. 알 수 없는 장치이므로 CPU로 설정됩니다.")
-            return WhisperModel(MODEL_SIZE, device="cpu", compute_type="int8")
-
-    def handle_error(self, e):
-        """에러 처리"""
-        error_msg = f'{e.__class__.__name__}:{e}'
-        logger.exception(error_msg)
-        traceback.print_exc()
-
-    def save_log(self, np_wav, username):
-        """로그 저장"""
-        today_date, today_time = get_today()
-        log_dir = f"{ENGINE_LOG_DIR}/{today_date}"
-        make_folder(log_dir)
-        filename = f"{today_time}-{username}.pcm"
-        np_wav.astype('int16').tofile(f"{log_dir}/{filename}")

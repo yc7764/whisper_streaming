@@ -6,14 +6,24 @@ import signal
 import os
 from time import sleep
 from queue import Queue
-from asr_process import asr_process
+from asr_process import ASRProcess, ASRConfig
 from util import *
 import struct
+import yaml
+from multiprocessing import Queue
+
+from logger import Log
 
 logger = logging.getLogger(__name__)
 
 MAGIC_STRING = b'WHISPER_STREAMING_V1.0'
 ENGINE_LIST = []
+log_queue = Queue(-1)
+MAX_CLIENT_N=50
+ENGINE_TIMEOUT = 60
+
+with open('config_vad.yaml') as f:
+    conf = yaml.safe_load(f)
 
 def recv_magicstring(client_socket):
     ret_magicstring = struct.unpack('>22s',bytes(recvall(client_socket,22)))
@@ -34,7 +44,7 @@ def recv_packet(client_socket):
     return hCode,hLen,data
 
 def handle_client(client_socket,ip,addr):
-    client_socket.settimeout(SOCKET_TIMEOUT)
+    client_socket.settimeout(conf['network']['socket_timeout'])
 ## stage 0: check magic string
     if MAGIC_STRING is not None:
         ret=recv_magicstring(client_socket)
@@ -220,44 +230,63 @@ def handle_client(client_socket,ip,addr):
             logger.exception(error_msg)
             traceback.print_exc()
 def main(args):
-    main_parser = get_parser()
-
     global MAX_CLIENT_N
-    global childs,ip
+    global server_ip
     
-    arguments = ['--lan', 'ko', '--task', 'transcribe',
-    '--model_dir', conf['language']]
-    g_args = main_parser.parse_args(arguments)
+    server_ip = conf['network']['ip']
+
+    asr_config = ASRConfig(
+        save_pcm=conf['logging']['save_pcm'],  # PCM 파일 저장 여부
+        pcm_path=conf['logging']['pcm_path'],  # PCM 파일 저장 경로
+        frame_size=conf['audio']['frame_size'],
+        sample_rate=conf['audio']['sample_rate'],
+        frame_duration_ms=conf['audio']['frame_duration_ms'],
+        vad_mode=conf['vad']['mode'],
+        socket_timeout=conf['network']['socket_timeout'],
+        model_size=conf['model']['size'],
+        device=conf['model']['device'],
+        language=conf['model']['language']
+    )
 
     global logger
+    levels = {
+        'critical': logging.CRITICAL,
+        'error': logging.ERROR,
+        'warn': logging.WARNING,
+        'warning': logging.WARNING,
+        'info': logging.INFO,
+        'debug': logging.DEBUG
+    }
+    level = levels.get(conf['logging']['level'])
+
     listeners = Log()
-    listeners.listener_start(LOGFILENAME, level, 'listener', log_queue)
+    listeners.listener_start(conf['logging']['log_path'], level, 'listener', log_queue)
     logger = Log().config_queue_log(log_queue, level, 'log')
 
-    for i in range(conf['channel']):
-        g_args.model = conf['model']
-        import copy
-        args=copy.deepcopy(g_args)
-        ENGINE_NAME=conf['language']+":"+str(i)
-        ENGINE_LIST.append({'running':False,'process':asr_process(ENGINE_NAME,(Queue(),Queue()),args)})
+    for i in range(conf['model']['channel']):
+        ENGINE_NAME=conf['model']['language']+":"+str(i)
+        ENGINE_LIST.append({
+            'running': False,
+            'process': ASRProcess(ENGINE_NAME, (Queue(), Queue()), asr_config)
+        })
 
     for engine in ENGINE_LIST:
         engine['process'].start()
-    logger.info(f'Starting up listener on localhost:{g_args.port} with mappings')
+    logger.info(f"Starting up listener on localhost:{conf['network']['port']} with mappings")
     
     global server_socket
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server_socket.bind((ip,g_args.port))
+    server_socket.bind((server_ip,conf['network']['port']))
     server_socket.listen(MAX_CLIENT_N)
     while True:
         try:
-            client_socket,(ip,addr) = server_socket.accept()
+            client_socket,(server_ip,addr) = server_socket.accept()
         except Exception as ex:
             error_msg = f'{ex.__class__.__name__}:{ex}'
             logger.exception(error_msg)
             break;
-        t= threading.Thread(target=handle_client,args=(client_socket,ip,addr))
+        t= threading.Thread(target=handle_client,args=(client_socket,server_ip,addr))
         t.daemon=True
         t.start()
     listeners.listener_end(log_queue)

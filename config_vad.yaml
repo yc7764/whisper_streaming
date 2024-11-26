@@ -1,22 +1,30 @@
 # config.yaml
 
-ip : "127.0.0.1"
+# 오디오 관련 설정
+audio:
+  frame_size: 480        # 오디오 프레임 크기 (16000Hz * 30ms = 480)
+  sample_rate: 16000     # 샘플링 레이트 (16kHz)
+  frame_duration_ms: 30  # 프레임 길이 (밀리초)
 
-port : 5000
+network:
+  socket_timeout: 60     # 소켓 타임아웃 시간 (초)
+  ip: "127.0.0.1"       # 서버 IP 주소
+  port: 5000            # 서버 포트 번호
 
-# cpu or cuda
-device : "cuda"
+# Whisper 모델 설정
+model:
+  size: "base"          # 모델 크기 (tiny, base, small, medium, large-v2)
+  device: "cuda"        # 실행 장치 (cpu 또는 cuda)
+  language: "ko"        # 인식 언어
+  channel: 1            # 동시 처리 채널 수
 
-channel : 1
+# VAD(Voice Activity Detection) 설정
+vad:
+  mode: 1              # VAD 모드 (0-3)
 
-# 0 to 3
-vad_mode : 1
-
-# tiny, base, small, medium, large, large-v2, large-v3
-model : "base"
-
-language : 'ko'
-
-log_path : "/mnt/f/workspace/stt_tcp_whisper/log/STT_log"
-
-pcm_path : "/mnt/f/workspace/stt_tcp_whisper/data"
+# 로그 설정
+logging:
+  level : "debug"       # 로그 레벨 (critical,error, warn, warning, info, debug)
+  save_pcm : True       # pcm 파일 저장 여부
+  log_path: "/mnt/f/workspace/stt_tcp_whisper/log/STT_log"  # 로그 저장 경로
+  pcm_path: "/mnt/f/workspace/stt_tcp_whisper/data"         # PCM 파일 저장 경로
