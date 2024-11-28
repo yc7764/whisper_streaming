@@ -1,12 +1,17 @@
 import logging
-import threading
+import logging.handlers
+from logging import getLogger
+from logging.handlers import TimedRotatingFileHandler, QueueHandler
+from multiprocessing import Queue
+import os
+from datetime import datetime
 
 class Log:
     """로깅 관리를 위한 클래스"""
 
     def __init__(self):
         """로거 초기화"""
-        self.thread = None
+        self.logger = None
 
     def get_logger(self, name):
         """
@@ -22,7 +27,7 @@ class Log:
         logging.Logger
             생성된 로거 객체
         """
-        return logging.getLogger(name)
+        return getLogger(name)
     
     def listener_start(self, file_path, level, name, queue):
         """
@@ -39,11 +44,30 @@ class Log:
         queue : Queue
             로그 메시지 큐
         """
-        self.thread = threading.Thread(
-            target=self._proc_log_queue,
-            args=(file_path, level, name, queue)
+        self.logger = self.get_logger(name)
+        self.logger.setLevel(level)
+        
+        # QueueHandler 직접 사용
+        qh = QueueHandler(queue)
+        self.logger.addHandler(qh)
+        
+        # 로그 파일 경로 생성
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        
+        # TimedRotatingFileHandler 직접 사용
+        file_handler = TimedRotatingFileHandler(
+            filename=file_path,
+            when='midnight',
+            interval=1,
+            encoding='utf-8'
         )
-        self.thread.start()
+        
+        # 포매터 설정
+        formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+        file_handler.setFormatter(formatter)
+        self.logger.addHandler(file_handler)
 
     def listener_end(self, queue):
         """
@@ -55,39 +79,31 @@ class Log:
             종료할 로그 메시지 큐
         """
         queue.put(None)  # 종료 신호 전송
-        self.thread.join()  # 스레드 종료 대기
+        self.logger.handlers.clear()  # 로거 핸들러 초기화
 
-    def _proc_log_queue(self, file_path, level, name, queue):
+    def _proc_log_queue(self, queue):
         """
-        로그 큐 처리 메서드
+        로그 큐 처리 프로세스
         
         Parameters
         ----------
-        file_path : str
-            로그 파일 경로
-        level : int
-            로깅 레벨
-        name : str
-            로거 이름
         queue : Queue
             처리할 로그 메시지 큐
         """
-        self.config_log(file_path, level, name)
-        logger = self.get_logger(name)
-        
         while True:
             try:
                 record = queue.get()
-                if record is None:  # 종료 신호 확인
+                if record is None:
                     break
+                logger = getLogger(record.name)
                 logger.handle(record)
-            except Exception:
-                import sys, traceback
-                traceback.print_exc()
+            except Exception as e:
+                print(f'Error in log queue processor: {str(e)}')
+                break
 
     def config_queue_log(self, queue, level, name):
         """
-        큐 기반 로거 설정
+        큐 핸들러를 사용하는 로거 설정
         
         Parameters
         ----------
@@ -103,15 +119,18 @@ class Log:
         logging.Logger
             설정된 로거 객체
         """
-        qh = logging.handlers.QueueHandler(queue)
-        logger = logging.getLogger(name)
+        logger = getLogger(name)
         logger.setLevel(level)
+        
+        # QueueHandler 직접 사용
+        qh = QueueHandler(queue)
         logger.addHandler(qh)
+        
         return logger
 
     def config_log(self, file_path, level, name):
         """
-        파일 및 스트림 로거 설정
+        파일 핸들러를 사용하는 로거 설정
         
         Parameters
         ----------
@@ -127,29 +146,25 @@ class Log:
         logging.Logger
             설정된 로거 객체
         """
-        # 로그 포맷 설정
-        formatter = logging.Formatter(
-            "%(asctime)s %(levelname)s [%(name)s] [%(filename)s:%(lineno)d] - %(message)s"
-        )
-
-        # 스트림 핸들러 설정 (콘솔 출력)
-        stream_handler = logging.StreamHandler()
-        
-        # 파일 핸들러 설정 (자동 로그 로테이션)
-        file_handler = logging.handlers.TimedRotatingFileHandler(
-            file_path,
-            when='midnight',      # 자정마다 로그 파일 교체
-            interval=1,           # 1일 간격
-            encoding='utf-8',     # UTF-8 인코딩
-            backupCount=30        # 최대 30일치 보관
-        )
-
-        file_handler.setFormatter(formatter)
-
-        # 로거 설정
-        logger = logging.getLogger(name)
+        logger = getLogger(name)
         logger.setLevel(level)
+        
+        # 로그 파일 경로 생성
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        
+        # TimedRotatingFileHandler 직접 사용
+        file_handler = TimedRotatingFileHandler(
+            filename=file_path,
+            when='midnight',
+            interval=1,
+            encoding='utf-8'
+        )
+        
+        # 포매터 설정
+        formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+        file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)
-        logger.addHandler(stream_handler)
-
+        
         return logger

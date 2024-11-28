@@ -99,9 +99,11 @@ if __name__ == '__main__':
     sock.sendall(MAGIC_STRING)
 
     # 3. 사용자 ID 전송 및 환영 메시지 수신
-    sock.sendall(b'%u0003yc7764')
+    print("send name")
+    sock.sendall(b'%u0006yc7764')
     hCode, hLen, data = recv_packet(sock)
     print(hCode, hLen, data)
+    print("send begin")
     sock.sendall(b'%b0000')
 
     # 4. 음성 데이터 전송
@@ -111,6 +113,7 @@ if __name__ == '__main__':
         block += chunk_size.encode()
         block += chunk
         sock.sendall(block)  # 헤더, 크기, 청크 전송
+        print("send")
     sock.sendall(b'%f0000')  # 마지막 블록 전송
 
     # 5. 결과 수신

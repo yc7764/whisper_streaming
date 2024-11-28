@@ -12,10 +12,6 @@ import struct
 import yaml
 from multiprocessing import Queue
 
-from logger import Log
-
-logger = logging.getLogger(__name__)
-
 MAGIC_STRING = b'WHISPER_STREAMING_V1.0'
 ENGINE_LIST = []
 log_queue = Queue(-1)
@@ -24,6 +20,70 @@ ENGINE_TIMEOUT = 60
 
 with open('config_vad.yaml') as f:
     conf = yaml.safe_load(f)
+
+class Log():
+    def __init__(self):
+        self.th = None
+
+    def get_logger(self, name):
+        return logging.getLogger(name)
+    
+    def listener_start(self, file_path, level, name, queue):
+        self.th = threading.Thread(target=self._proc_log_queue, args=(file_path, level, name, queue))
+        self.th.start()
+
+    def listener_end(self, queue):
+        queue.put(None)
+        self.th.join()
+        print('log listener end...')
+
+    def _proc_log_queue(self, file_path, level, name, queue):
+        self.config_log(file_path, level, name)
+        logger = self.get_logger(name)
+        while True:
+            try:
+                record = queue.get()
+                if record is None:
+                    break
+                logger.handle(record)
+            except Exception:
+                import sys, traceback
+                traceback.print_exc()
+
+    def config_queue_log(self, queue, level, name):
+        qh = logging.handlers.QueueHandler(queue)
+        logger = logging.getLogger(name)
+        logger.setLevel(level)
+        logger.addHandler(qh)
+        return logger
+
+    def config_log(self, file_path, level, name):
+        formatter = logging.Formatter("%(asctime)s %(levelname)s [%(name)s] [%(filename)s:%(lineno)d] - %(message)s")
+
+        stream_handler = logging.StreamHandler()
+        file_handler = logging.handlers.TimedRotatingFileHandler(
+            file_path, when='midnight', interval=1, encoding='utf-8', backupCount=30)
+
+        file_handler.setFormatter(formatter)
+
+        logger = logging.getLogger(name)
+        logger.setLevel(level)
+        logger.addHandler(file_handler)
+        logger.addHandler(stream_handler)
+
+        return logger
+    
+def recvall(socket, n):
+    sock = socket
+    data = bytearray()
+    
+    while len(data) < n:
+        packet = sock.recv(n - len(data))
+        if not packet:
+            return None
+        data.extend(packet)
+
+    return data
 
 def recv_magicstring(client_socket):
     ret_magicstring = struct.unpack('>22s',bytes(recvall(client_socket,22)))

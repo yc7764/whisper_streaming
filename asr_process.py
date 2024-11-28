@@ -7,7 +7,7 @@ import struct
 import librosa
 import webrtcvad
 from multiprocessing import Process
-from whisper import WhisperModel
+from faster_whisper import WhisperModel
 from datetime import datetime
 
 from util import get_today, make_folder
@@ -189,10 +189,11 @@ class ASRProcess(Process):
         
     def initialize_whisper_model(self):
         """Whisper 모델 초기화"""
+        print(self.config.model_size)
         return WhisperModel(
-            model_size=self.config.model_size,
+            self.config.model_size,
             device=self.config.device,
-            compute_type="float16"
+            compute_type="int8"
         )
 
     def save_log(self, np_wav, username):

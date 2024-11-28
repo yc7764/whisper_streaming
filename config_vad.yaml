@@ -24,7 +24,7 @@ vad:
 
 # 로그 설정
 logging:
-  level : "debug"       # 로그 레벨 (critical,error, warn, warning, info, debug)
+  level : "info"       # 로그 레벨 (critical,error, warn, warning, info, debug)
   save_pcm : True       # pcm 파일 저장 여부
-  log_path: "/mnt/f/workspace/stt_tcp_whisper/log/STT_log"  # 로그 저장 경로
-  pcm_path: "/mnt/f/workspace/stt_tcp_whisper/data"         # PCM 파일 저장 경로
+  log_path: "./log/STT_log"  # 로그 저장 경로
+  pcm_path: "./data"         # PCM 파일 저장 경로
