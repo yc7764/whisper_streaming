@@ -5,6 +5,7 @@ from logging.handlers import TimedRotatingFileHandler, QueueHandler
 from multiprocessing import Queue
 import os
 from datetime import datetime
+import threading
 
 class Log:
     """로깅 관리를 위한 클래스"""
@@ -44,30 +45,33 @@ class Log:
         queue : Queue
             로그 메시지 큐
         """
-        self.logger = self.get_logger(name)
-        self.logger.setLevel(level)
+        self.logger = threading.Thread(target=self._proc_log_queue, args=(file_path, level, name, queue))
+        self.logger.start()
+
+        # self.logger = self.get_logger(name)
+        # self.logger.setLevel(level)
         
-        # QueueHandler 직접 사용
-        qh = QueueHandler(queue)
-        self.logger.addHandler(qh)
+        # # QueueHandler 직접 사용
+        # qh = QueueHandler(queue)
+        # self.logger.addHandler(qh)
         
-        # 로그 파일 경로 생성
-        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        # # 로그 파일 경로 생성
+        # os.makedirs(os.path.dirname(file_path), exist_ok=True)
         
-        # TimedRotatingFileHandler 직접 사용
-        file_handler = TimedRotatingFileHandler(
-            filename=file_path,
-            when='midnight',
-            interval=1,
-            encoding='utf-8'
-        )
+        # # TimedRotatingFileHandler 직접 사용
+        # file_handler = TimedRotatingFileHandler(
+        #     filename=file_path,
+        #     when='midnight',
+        #     interval=1,
+        #     encoding='utf-8'
+        # )
         
-        # 포매터 설정
-        formatter = logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-        )
-        file_handler.setFormatter(formatter)
-        self.logger.addHandler(file_handler)
+        # # 포매터 설정
+        # formatter = logging.Formatter(
+        #     '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        # )
+        # file_handler.setFormatter(formatter)
+        # self.logger.addHandler(file_handler)
 
     def listener_end(self, queue):
         """
@@ -81,7 +85,7 @@ class Log:
         queue.put(None)  # 종료 신호 전송
         self.logger.handlers.clear()  # 로거 핸들러 초기화
 
-    def _proc_log_queue(self, queue):
+    def _proc_log_queue(self, file_path, level, name, queue):
         """
         로그 큐 처리 프로세스
         
@@ -90,16 +94,17 @@ class Log:
         queue : Queue
             처리할 로그 메시지 큐
         """
+        self.config_log(file_path, level, name)
+        logger = self.get_logger(name)
         while True:
             try:
                 record = queue.get()
                 if record is None:
                     break
-                logger = getLogger(record.name)
                 logger.handle(record)
             except Exception as e:
-                print(f'Error in log queue processor: {str(e)}')
-                break
+                import sys, traceback
+                traceback.print_exc()
 
     def config_queue_log(self, queue, level, name):
         """
@@ -146,25 +151,21 @@ class Log:
         logging.Logger
             설정된 로거 객체
         """
-        logger = getLogger(name)
-        logger.setLevel(level)
         
         # 로그 파일 경로 생성
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
         
-        # TimedRotatingFileHandler 직접 사용
-        file_handler = TimedRotatingFileHandler(
-            filename=file_path,
-            when='midnight',
-            interval=1,
-            encoding='utf-8'
-        )
-        
-        # 포매터 설정
-        formatter = logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-        )
+        formatter = logging.Formatter("%(asctime)s %(levelname)s [%(name)s] [%(filename)s:%(lineno)d] - %(message)s")
+
+        stream_handler = logging.StreamHandler()
+        file_handler = logging.handlers.TimedRotatingFileHandler(
+            file_path, when='midnight', interval=1, encoding='utf-8', backupCount=30)
+
         file_handler.setFormatter(formatter)
+
+        logger = logging.getLogger(name)
+        logger.setLevel(level)
         logger.addHandler(file_handler)
-        
+        logger.addHandler(stream_handler)
+
         return logger

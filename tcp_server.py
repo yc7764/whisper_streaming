@@ -11,6 +11,7 @@ from util import *
 import struct
 import yaml
 from multiprocessing import Queue
+from log_util import Log
 
 MAGIC_STRING = b'WHISPER_STREAMING_V1.0'
 ENGINE_LIST = []
@@ -20,58 +21,6 @@ ENGINE_TIMEOUT = 60
 
 with open('config_vad.yaml') as f:
     conf = yaml.safe_load(f)
-
-class Log():
-    def __init__(self):
-        self.th = None
-
-    def get_logger(self, name):
-        return logging.getLogger(name)
-    
-    def listener_start(self, file_path, level, name, queue):
-        self.th = threading.Thread(target=self._proc_log_queue, args=(file_path, level, name, queue))
-        self.th.start()
-
-    def listener_end(self, queue):
-        queue.put(None)
-        self.th.join()
-        print('log listener end...')
-
-    def _proc_log_queue(self, file_path, level, name, queue):
-        self.config_log(file_path, level, name)
-        logger = self.get_logger(name)
-        while True:
-            try:
-                record = queue.get()
-                if record is None:
-                    break
-                logger.handle(record)
-            except Exception:
-                import sys, traceback
-                traceback.print_exc()
-
-    def config_queue_log(self, queue, level, name):
-        qh = logging.handlers.QueueHandler(queue)
-        logger = logging.getLogger(name)
-        logger.setLevel(level)
-        logger.addHandler(qh)
-        return logger
-
-    def config_log(self, file_path, level, name):
-        formatter = logging.Formatter("%(asctime)s %(levelname)s [%(name)s] [%(filename)s:%(lineno)d] - %(message)s")
-
-        stream_handler = logging.StreamHandler()
-        file_handler = logging.handlers.TimedRotatingFileHandler(
-            file_path, when='midnight', interval=1, encoding='utf-8', backupCount=30)
-
-        file_handler.setFormatter(formatter)
-
-        logger = logging.getLogger(name)
-        logger.setLevel(level)
-        logger.addHandler(file_handler)
-        logger.addHandler(stream_handler)
-
-        return logger
     
 def recvall(socket, n):
     sock = socket
@@ -327,7 +276,7 @@ def main(args):
         ENGINE_NAME=conf['model']['language']+":"+str(i)
         ENGINE_LIST.append({
             'running': False,
-            'process': ASRProcess(ENGINE_NAME, (Queue(), Queue()), asr_config)
+            'process': ASRProcess(ENGINE_NAME, (Queue(), Queue()), logger, asr_config)
         })
 
     for engine in ENGINE_LIST:

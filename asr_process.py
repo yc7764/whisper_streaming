@@ -40,7 +40,7 @@ class ASRConfig:
 class ASRProcess(Process):
     """실시간 음성 인식을 처리하는 프로세스 클래스"""
 
-    def __init__(self, engine_name, data_queue, config=None):
+    def __init__(self, engine_name, data_queue, process_logger, config=None):
         """
         ASR 프로세스 초기화
         
@@ -58,6 +58,7 @@ class ASRProcess(Process):
         self.data_out = data_queue[1]
         self.engine_name = engine_name
         self.config = config or ASRConfig()
+        self.logger = process_logger
 
     def process_audio_segment(self, wavData, epd_start, vad_index, frame_start, whisper_model):
         """
@@ -109,22 +110,12 @@ class ASRProcess(Process):
             self.data_out.put_nowait(('%R', resultTxt))
             
         return result_text
-    def process_voice_data(self, wavData, buf, np_wav, vad_index, 
+    def process_voice_data(self, wavData, vad_index, 
                           vad, triggered, epd_start, silence_cnt, epd_state, whisper_model):
         """음성 데이터 처리 및 VAD 적용"""
-        # 새로운 데이터 추가
-        if wavData is None:
-            wavData = buf
-        else:
-            wavData.extend(buf)
-        
-        # 바이트 데이터를 short 타입으로 변환
-        epdShortBuffer = struct.unpack('h' * (len(buf) // 2), buf)
-        np_wav = np.concatenate((np_wav, np.array(epdShortBuffer, dtype=np.int16)), axis=0)
-        
         # VAD 처리
         while vad_index + self.config.frame_size <= len(wavData):
-            frame = wavData[vad_index:vad_index+self.config.frame_size]
+            frame = wavData[vad_index:vad_index+self.config.frame_size+1]
             frame_start = (vad_index//self.config.frame_size) * (self.config.frame_duration_ms/1000)
             
             if vad.is_speech(frame, self.config.sample_rate):
@@ -157,12 +148,12 @@ class ASRProcess(Process):
         
         return wavData, triggered, epd_start, silence_cnt, epd_state, vad_index
 
-    def handle_finish_packet(self, np_wav, triggered, epd_start, whisper_model):
+    def handle_finish_packet(self, wavData, triggered, epd_start, whisper_model):
         """종료 패킷 처리"""
         if triggered:
-            frame_start = (len(np_wav)//self.config.frame_size) * (self.config.frame_duration_ms/1000)
-            self.process_audio_segment(np_wav, epd_start, len(np_wav), frame_start, whisper_model)
-            logger.info(f'Engine[{self.engine_name}] : 인식 종료')
+            frame_start = (len(wavData)//self.config.frame_size) * (self.config.frame_duration_ms/1000)
+            self.process_audio_segment(wavData, epd_start, len(wavData), frame_start, whisper_model)
+            self.logger.info(f'Engine[{self.engine_name}] : 인식 종료')
 
     def combine_segments(self, segments):
         """
@@ -189,20 +180,19 @@ class ASRProcess(Process):
         
     def initialize_whisper_model(self):
         """Whisper 모델 초기화"""
-        print(self.config.model_size)
         return WhisperModel(
             self.config.model_size,
             device=self.config.device,
             compute_type="int8"
         )
 
-    def save_log(self, np_wav, username):
+    def save_log(self, wavData, username):
         """
         음성 데이터와 로그를 저장
         
         Parameters
         ----------
-        np_wav : numpy.ndarray
+        wavData : numpy.ndarray
             저장할 음성 데이터 배열
         username : str
             사용자 이름
@@ -218,9 +208,9 @@ class ASRProcess(Process):
                 
                 pcm_filename = f"{pcm_dir}/{current_date}_{username}_{current_time}.pcm"
                 with open(pcm_filename, 'wb') as f:
-                    f.write(np_wav.tobytes())
+                    f.write(wavData)
                 
-                logger.info(f"Engine[{self.engine_name}] : PCM 파일 저장 완료 - {pcm_filename}")
+                self.logger.info(f"Engine[{self.engine_name}] : PCM 파일 저장 완료 - {pcm_filename}")
                 
         except Exception as e:
             error_msg = f"Engine[{self.engine_name}] : 로그 저장 실패 - {str(e)}"
@@ -244,7 +234,7 @@ class ASRProcess(Process):
     def run(self):
         """ASR 프로세스 실행"""
         try:
-            logger.info(f'[{self.engine_name}] 프로세스 초기화 성공')
+            self.logger.info(f'[{self.engine_name}] 프로세스 초기화 성공')
             
             # VAD 초기화
             vad = webrtcvad.Vad()
@@ -257,7 +247,6 @@ class ASRProcess(Process):
                 # 변수 초기화
                 wavData = None
                 isStart = True
-                np_wav = np.zeros(shape=(0), dtype=np.int16)
                 vad_index = 0
                 epd_start = -1
                 triggered = False
@@ -280,13 +269,18 @@ class ASRProcess(Process):
                         
                         if header == b'%f':
                             # 종료 패킷
-                            self.handle_finish_packet(np_wav, triggered, epd_start, whisper_model)
+                            self.handle_finish_packet(wavData, triggered, epd_start, whisper_model)
                             isStart = False
                             
                         elif header == b'%s':
                             # 음성 데이터 처리
+                            if wavData is None:
+                                wavData = buf
+                            else:
+                                wavData.extend(buf)
+
                             wavData, triggered, epd_start, silence_cnt, epd_state, vad_index = \
-                                self.process_voice_data(wavData, buf, np_wav,
+                                self.process_voice_data(wavData,
                                                         vad_index, vad, triggered, epd_start,
                                                         silence_cnt, epd_state, whisper_model)
                         else:
@@ -297,10 +291,10 @@ class ASRProcess(Process):
                 except Exception as e:
                     self.handle_error(e)
                 finally:
-                    logger.info(f'Engine[{self.engine_name}] : {username} 요청 처리 종료')
+                    self.logger.info(f'Engine[{self.engine_name}] : {username} 요청 처리 종료')
                     self.data_out.put_nowait(('%F', None))
                     # 로그 저장
-                    self.save_log(np_wav, username)
+                    self.save_log(wavData, username)
                     
         except Exception as e:
             self.handle_error(e)

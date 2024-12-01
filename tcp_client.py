@@ -113,7 +113,6 @@ if __name__ == '__main__':
         block += chunk_size.encode()
         block += chunk
         sock.sendall(block)  # 헤더, 크기, 청크 전송
-        print("send")
     sock.sendall(b'%f0000')  # 마지막 블록 전송
 
     # 5. 결과 수신
