@@ -227,9 +227,9 @@ class ASRProcess(Process):
             처리할 예외 객체
         """
         error_msg = f"Engine[{self.engine_name}] : {e.__class__.__name__}:{str(e)}"
-        logger.error(error_msg)
-        logger.exception(e)
-        self.data_out.put_nowait(('%E', error_msg))
+        self.logger.error(error_msg)
+        self.logger.exception(e)
+        self.data_out.put_nowait(('%F', None))
 
     def run(self):
         """ASR 프로세스 실행"""
@@ -291,7 +291,6 @@ class ASRProcess(Process):
                 except Exception as e:
                     self.handle_error(e)
                 finally:
-                    self.logger.info(f'Engine[{self.engine_name}] : {username} 요청 처리 종료')
                     self.data_out.put_nowait(('%F', None))
                     # 로그 저장
                     self.save_log(wavData, username)

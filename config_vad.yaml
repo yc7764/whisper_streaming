@@ -13,8 +13,8 @@ network:
 
 # Whisper 모델 설정
 model:
-  size: "base"          # 모델 크기 (tiny, base, small, medium, large-v2)
-  device: "cpu"        # 실행 장치 (cpu 또는 cuda)
+  size: "small"          # 모델 크기 (tiny, base, small, medium, large-v2)
+  device: "cuda"        # 실행 장치 (cpu 또는 cuda)
   language: "ko"        # 인식 언어
   channel: 1            # 동시 처리 채널 수
 

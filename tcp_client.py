@@ -97,13 +97,13 @@ if __name__ == '__main__':
     sock.connect((host, port))
     MAGIC_STRING = b'WHISPER_STREAMING_V1.0'
     sock.sendall(MAGIC_STRING)
+    hCode, hLen, data = recv_packet(sock)
+    print(hCode, hLen, data)
 
     # 3. 사용자 ID 전송 및 환영 메시지 수신
-    print("send name")
     sock.sendall(b'%u0006yc7764')
     hCode, hLen, data = recv_packet(sock)
     print(hCode, hLen, data)
-    print("send begin")
     sock.sendall(b'%b0000')
 
     # 4. 음성 데이터 전송

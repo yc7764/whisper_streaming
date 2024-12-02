@@ -60,6 +60,9 @@ def handle_client(client_socket,ip,addr):
         if ret == False:
             illegal_packet_error_log(client_socket,ip, addr, 'INVALID_MAGICSTRING')
             return
+        else:
+            msg = 'Connection successful'
+            client_socket.sendall(bytes('%%M%04x%s' % (len(msg), msg), encoding='utf-8'))
 
     try:
         pCode, pLen, pData = recv_packet(client_socket)
@@ -112,6 +115,8 @@ def handle_client(client_socket,ip,addr):
 
 ## stage 4: receive signal buffer & send recognition result
     if allocated:
+        session=True
+        logger.info(f'[{asr_process.engine_name}] is allocated from {ip}')
         msg='welcome message for user[%s]'%username
         logger.info(f'IP[{ip}] : {msg}')
         try:
@@ -119,7 +124,7 @@ def handle_client(client_socket,ip,addr):
 
             while(True):
                 pCode, pLen, pData = recv_packet(client_socket)
-                logger.info(f'USER[{username}] : recv packet code[{pCode}] len[{pLen}]]')
+                logger.info(f'USER[{username}] : recv packet code[{pCode}] len[{pLen}]')
                 if pCode == b'%b': 
                     break
                 else:
@@ -128,14 +133,6 @@ def handle_client(client_socket,ip,addr):
         except Exception as e:
             illegal_packet_error_log(client_socket,ip, addr, 'DISCONNECTED_WELCOME_MSG')
             return
-        except socket.timeout:
-            timeout_error_log(client_socket,ip, addr, 'TIME_OUT')
-            error_msg = f'IP[{ip}] - Userid[{username}] : TIME_OUT_BEGIN_MSG'
-            logger.error(error_msg)
-            return
-
-        logger.info(f'[{asr_process.engine_name}] is allocated from {ip}')
-        session=True
 
         ## clear queue ####
         try:
@@ -178,7 +175,7 @@ def handle_client(client_socket,ip,addr):
                     break
         try:
             pCode, pLen, pData = recv_packet(client_socket)
-            logger.info(f'[{asr_process.engine_name}]-USER[{username}] : recv code[{pCode}] len[{pLen}]')
+            logger.debug(f'[{asr_process.engine_name}]-USER[{username}] : recv code[{pCode}] len[{pLen}]')
             if pCode == b'%f':
                 client_socket.sendall(b'%F0000')
                 logger.info(f"USER[{username}] : Engine[{asr_process.engine_name}] : "
@@ -195,12 +192,13 @@ def handle_client(client_socket,ip,addr):
 
                 while session:
                     pCode, pLen, pData = recv_packet(client_socket)
-                    logger.info(f'[{asr_process.engine_name}]-USER[{username}] : recv code[{pCode}] len[{pLen}]')
+                    logger.debug(f'[{asr_process.engine_name}]-USER[{username}] : recv code[{pCode}] len[{pLen}]')
                     asr_process.data_in.put((pCode,pData))
 
                     if pCode == b'%f':
                         break
                 t1.join()
+                logger.info(f'Engine[{asr_process.engine_name}] : {username} 요청 처리 종료')
         except socket.timeout:
             error_msg = f'[{asr_process.engine_name}]-USER[{username}] : time_out error'
             logger.error(error_msg)
